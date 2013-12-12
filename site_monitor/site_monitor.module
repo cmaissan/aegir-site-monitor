@@ -1,0 +1,127 @@
+<?php
+
+/**
+ * Implementation of hook_cron
+ */
+function site_monitor_cron() 
+{
+	$interval = variable_get('site_monitor_interval', 60 * 60);
+	if (time() >= variable_get('site_monitor_next_execution', 0)) {
+		variable_set('site_monitor_next_execution', time() + $interval);
+		_site_monitor_check_sites();
+	}
+}
+
+/**
+ * Attempt to access each site
+ */
+function _site_monitor_check_sites()
+{
+	// Acceptable responds codes
+	$acceptable_codes = explode(',', variable_get('site_monitor_accept_response_codes', '200'));
+
+	// Query for all sites
+	$sites = $nodes = db_query("
+		SELECT 
+			title 
+		FROM 
+			{node} JOIN {hosting_site} ON {node}.nid = {hosting_site}.nid
+		WHERE 
+			{node}.type='%s' AND {hosting_site}.status = 1
+	", 'site');
+	$errors = array();
+	$success = array();
+	$ignore = preg_split('/[\s,]+/', variable_get('site_monitor_ignore', ''));
+	while ($site = db_fetch_object($sites)) {
+
+		// Look for site in ignore list
+		if (!in_array($site->title, $ignore)) {
+
+			// Attempt site
+			$handle = curl_init($site->title);
+			curl_setopt($handle, CURLOPT_RETURNTRANSFER, TRUE);
+			curl_setopt($handle, CURLOPT_FOLLOWLOCATION, TRUE);
+			curl_setopt($handle, CURLOPT_NOBODY, TRUE);
+			$response = curl_exec($handle);
+			$http_code = curl_getinfo($handle, CURLINFO_HTTP_CODE);
+			if (in_array($http_code, $acceptable_codes)) $success[$site->title] = $http_code;
+			else $errors[$site->title] = $http_code;
+			curl_close($handle);
+		}
+	}
+
+	// Send notification
+	$email = variable_get('site_monitor_email', FALSE);
+	if (!empty($errors) && $email) {
+		$message = "The following sites returned error codes:\n\n";
+		foreach ($errors as $url => $error_code) $message .= "$url  ($error_code)\n";
+		mail($email, '[AEGIR ALERT] ' . count($errors) . ' sites returned error codes', $message);
+	}
+
+	// Display message
+	drupal_set_message(
+		(count($errors) + count($success)) . ' sites were checked, ' . 
+		count($errors) . ' returned error codes.',
+		empty($errors) ? 'status' : 'warning'
+	);
+}
+
+/**
+ * Implementation of hook_menu
+ */
+function site_monitor_menu() 
+{
+	$items['admin/hosting/site_monitor'] = array(
+		'title' => 'Site monitoring',
+		'description' => 'Configure monitoring for hosted sites',
+		'page callback' => 'drupal_get_form',
+		'page arguments' => array('site_monitor_settings'),
+		'access arguments' => array('administer hosting'),
+		'type' => MENU_LOCAL_TASK
+	);
+	return $items;
+}
+
+/**
+ * Configuration form
+ */
+function site_monitor_settings() 
+{
+	$intervals = drupal_map_assoc(array(
+		strtotime('15 minutes', 0),
+		strtotime('30 minutes', 0),
+		strtotime('1 hour', 0),
+		strtotime('1 day', 0)
+	), 'format_interval');
+
+	$form['site_monitor_check'] = array(
+		'#type' => 'submit',
+		'#submit' => array('_site_monitor_check_sites'),
+		'#value' => t('Check sites now')
+	);
+	$form['site_monitor_interval'] = array(
+		'#type' => 'select',
+		'#title' => t('Check sites every'),
+		'#default_value' => variable_get('site_monitor_interval', strtotime('1 day', 0)),
+		'#options' => $intervals
+	);
+	$form['site_monitor_email'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Send alerts to'),
+		'#default_value' => variable_get('site_monitor_email', '')
+	);
+	$form['site_monitor_accept_response_codes'] = array(
+		'#type' => 'textfield',
+		'#title' => t('Accept response codes'),
+		'#default_value' => variable_get('site_monitor_accept_response_codes', '200')
+	);
+	$form['site_monitor_ignore'] = array(
+		'#type' => 'textarea',
+		'#title' => t('Ignore sites'),
+		'#default_value' => variable_get('site_monitor_ignore', '')
+	);
+
+	return system_settings_form($form);
+}
+
+?>
