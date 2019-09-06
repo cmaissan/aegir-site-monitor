@@ -33,37 +33,52 @@ function _hosting_site_monitor_check_sites()
 	$success = array();
 	$ignore = preg_split('/[\s,]+/', variable_get('hosting_site_monitor_ignore', ''));
 	foreach ($nodes as $node) {
-		if ($node->site_status == 1) {
 
-			// Look for site in ignore list
-			if (!in_array($node->title, $ignore)) {
+		// Skip disabled sites
+		if ($node->site_status == 0) {
+			continue;
+		}
 
-				// Attempt site
-				$handle = curl_init($node->title);
-				curl_setopt($handle, CURLOPT_RETURNTRANSFER, TRUE);
-				curl_setopt($handle, CURLOPT_FOLLOWLOCATION, TRUE);
-				curl_setopt($handle, CURLOPT_NOBODY, TRUE);
-				$response = curl_exec($handle);
-				$http_code = curl_getinfo($handle, CURLINFO_HTTP_CODE);
-				if (in_array($http_code, $acceptable_codes)) {
-					$success[$node->title] = $http_code;
+		// Skip ignored sites
+		foreach ($ignore as $ignored) {
+			$pattern = '/^' . str_replace(
+				['.', '*'],
+				['\.', '[0-9A-Za-z\-\_]+'],
+				$ignored
+			) . '$/';
+			if (preg_match($pattern, $node->title)) {
+				continue 2;
+			}
+		}
+
+		// Look for site in ignore list
+		if (!in_array($node->title, $ignore)) {
+
+			// Attempt site
+			$handle = curl_init($node->title);
+			curl_setopt($handle, CURLOPT_RETURNTRANSFER, TRUE);
+			curl_setopt($handle, CURLOPT_FOLLOWLOCATION, TRUE);
+			curl_setopt($handle, CURLOPT_NOBODY, TRUE);
+			$response = curl_exec($handle);
+			$http_code = curl_getinfo($handle, CURLINFO_HTTP_CODE);
+			if (in_array($http_code, $acceptable_codes)) {
+				$success[$node->title] = 'Response code: ' . $http_code;
+			} else {
+				$errors[$node->title] = $http_code == 0 ? 'Error' : 'Response code: ' . $http_code;
+			}
+			curl_close($handle);
+
+			// Check SSL
+			if ($node->https_enabled > 0) {
+				$get = stream_context_create(array('ssl' => array('capture_peer_cert' => TRUE)));
+				$read = stream_socket_client('ssl://' . $node->title . ':443', $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $get);
+				$cert = stream_context_get_params($read);
+				$certinfo = openssl_x509_parse($cert['options']['ssl']['peer_certificate']);
+				if (empty($certinfo)) {
+					$errors[$node->title] = 'Certificate error';
 				} else {
-					$errors[$node->title] = $http_code;
-				}
-				curl_close($handle);
-
-				// Check SSL expiration
-				if ($node->https_enabled > 0) {
-					$get = stream_context_create(array('ssl' => array('capture_peer_cert' => TRUE)));
-					$read = stream_socket_client('ssl://' . $node->title . ':443', $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $get);
-					$cert = stream_context_get_params($read);
-					$certinfo = openssl_x509_parse($cert['options']['ssl']['peer_certificate']);
-					if (empty($certinfo)) {
-						$errors[$node->title] = 'Certificate error';
-					} else {
-						if (strtotime('+1 week') < $certinfo['validTo_time_t']) {
-							$errors[$node->title] = 'Certificate will expire ' . date('Y-m-d', $certinfo['validTo_time_t']);
-						}
+					if (strtotime('+1 week') > $certinfo['validTo_time_t']) {
+						$errors[$node->title] = 'Certificate will expire ' . date('Y-m-d', $certinfo['validTo_time_t']);
 					}
 				}
 			}
@@ -73,9 +88,21 @@ function _hosting_site_monitor_check_sites()
 	// Send notification
 	$email = variable_get('hosting_site_monitor_email', FALSE);
 	if (!empty($errors) && $email) {
-		$message = "The following sites returned error codes:\n\n";
-		foreach ($errors as $url => $error_code) $message .= "$url  ($error_code)\n";
-		mail($email, '[AEGIR ALERT] ' . count($errors) . ' sites returned error codes', $message);
+		$message =
+			'<p>The following sites returned error codes:</p>' .
+			'<table><thead><tr><th align="left">Site</th><th align="left">Error</th></tr>';
+		foreach ($errors as $url => $error) {
+			$message .=
+				'<tr><td>' . $url . '</td>' .
+				'<td>' . $error . '</td></tr>';
+		};
+		$message .= '</table>';
+		mail(
+			$email,
+			'[AEGIR ALERT] ' . count($errors) . ' sites returned error codes',
+			$message,
+			'Content-Type: text/html; charset=ISO-8859-1'
+		);
 	}
 
 	// Display message
