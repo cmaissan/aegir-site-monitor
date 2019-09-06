@@ -1,5 +1,0 @@
-name = Site monitor
-description = Monitors Aegir sites for 500 error codes.
-core = 6.x
-package = Hosting
-dependencies[] = hosting_site

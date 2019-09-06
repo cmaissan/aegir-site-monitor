@@ -1,0 +1,6 @@
+name = Site monitor
+description = Monitors Aegir sites for error codes.
+core = 7.x
+version = 7.x-1.0
+package = Hosting
+dependencies[] = hosting_site
