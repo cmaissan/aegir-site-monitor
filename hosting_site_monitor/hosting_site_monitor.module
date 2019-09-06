@@ -33,23 +33,40 @@ function _hosting_site_monitor_check_sites()
 	$success = array();
 	$ignore = preg_split('/[\s,]+/', variable_get('hosting_site_monitor_ignore', ''));
 	foreach ($nodes as $node) {
+		if ($node->site_status == 1) {
 
-		// Look for site in ignore list
-		if (!in_array($node->title, $ignore)) {
+			// Look for site in ignore list
+			if (!in_array($node->title, $ignore)) {
 
-			// Attempt site
-			$handle = curl_init($node->title);
-			curl_setopt($handle, CURLOPT_RETURNTRANSFER, TRUE);
-			curl_setopt($handle, CURLOPT_FOLLOWLOCATION, TRUE);
-			curl_setopt($handle, CURLOPT_NOBODY, TRUE);
-			$response = curl_exec($handle);
-			$http_code = curl_getinfo($handle, CURLINFO_HTTP_CODE);
-			if (in_array($http_code, $acceptable_codes)) {
-				$success[$node->title] = $http_code;
-			} else {
-				$errors[$node->title] = $http_code;
+				// Attempt site
+				$handle = curl_init($node->title);
+				curl_setopt($handle, CURLOPT_RETURNTRANSFER, TRUE);
+				curl_setopt($handle, CURLOPT_FOLLOWLOCATION, TRUE);
+				curl_setopt($handle, CURLOPT_NOBODY, TRUE);
+				$response = curl_exec($handle);
+				$http_code = curl_getinfo($handle, CURLINFO_HTTP_CODE);
+				if (in_array($http_code, $acceptable_codes)) {
+					$success[$node->title] = $http_code;
+				} else {
+					$errors[$node->title] = $http_code;
+				}
+				curl_close($handle);
+
+				// Check SSL expiration
+				if ($node->https_enabled > 0) {
+					$get = stream_context_create(array('ssl' => array('capture_peer_cert' => TRUE)));
+					$read = stream_socket_client('ssl://' . $node->title . ':443', $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $get);
+					$cert = stream_context_get_params($read);
+					$certinfo = openssl_x509_parse($cert['options']['ssl']['peer_certificate']);
+					if (empty($certinfo)) {
+						$errors[$node->title] = 'Certificate error';
+					} else {
+						if (strtotime('+1 week') < $certinfo['validTo_time_t']) {
+							$errors[$node->title] = 'Certificate will expire ' . date('Y-m-d', $certinfo['validTo_time_t']);
+						}
+					}
+				}
 			}
-			curl_close($handle);
 		}
 	}
 
