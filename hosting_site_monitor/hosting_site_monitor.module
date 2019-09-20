@@ -35,7 +35,7 @@ function _hosting_site_monitor_check_sites()
 	foreach ($nodes as $node) {
 
 		// Skip disabled sites
-		if ($node->site_status == 0) {
+		if ($node->site_status < 1) {
 			continue;
 		}
 
